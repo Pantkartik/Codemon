@@ -168,6 +168,14 @@ io.on('connection', (socket) => {
     });
 });
 
+const path = require('path');
+
 app.get('/health',(req,res)=> res.status(200).json({ message:"ok", success:true }))
+
+// Serve static frontend in production
+app.use(express.static(path.join(__dirname, '../frontend/dist')));
+app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, '../frontend/dist/index.html'));
+});
 
 httpServer.listen(3000,()=> console.log("Server is running on port 3000"))

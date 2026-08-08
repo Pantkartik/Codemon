@@ -1,0 +1,9 @@
+{
+  "name": "codemon-root",
+  "version": "1.0.0",
+  "scripts": {
+    "postinstall": "cd frontend && npm install && cd ../backend && npm install",
+    "build": "cd frontend && npm run build",
+    "start": "cd backend && node server.js"
+  }
+}
