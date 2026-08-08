@@ -168,7 +168,7 @@ function App() {
   };
 
   useEffect(() => {
-    const s = io(window.location.protocol + "//" + window.location.hostname + ":3000");
+    const s = io(import.meta.env.PROD ? undefined : "http://localhost:3000");
     setSocket(s);
 
     s.on('join-decision', (res) => {
@@ -281,7 +281,7 @@ function App() {
   useEffect(() => {
     if (view !== 'workspace' || !activeRoomId) return;
 
-    const serverUrl = window.location.protocol + "//" + window.location.hostname + ":3000";
+    const serverUrl = import.meta.env.PROD ? window.location.origin : "http://localhost:3000";
     const provider = new SocketIOProvider(serverUrl, `y-${activeRoomId}`, ydoc, { autoConnect: true });
     providerRef.current = provider;
 
