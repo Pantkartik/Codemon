@@ -1,1 +1,215 @@
-@import "tailwindcss"
+@import "tailwindcss";
+
+/* Custom Scrollbars - Pure Dark Minimalist */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(161, 161, 170, 0.2);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(161, 161, 170, 0.4);
+}
+
+/* Yjs Collaborative Remote Selection & Cursors */
+.yRemoteSelection {
+  background-color: rgba(59, 130, 246, 0.25);
+}
+
+.yRemoteSelectionHead {
+  position: absolute;
+  border-left: 2px solid #60a5fa;
+  border-top: 2px solid #60a5fa;
+  height: 100%;
+  box-sizing: border-box;
+}
+
+.yRemoteSelectionHead::after {
+  position: absolute;
+  content: ' ';
+  content: attr(data-user-name);
+  position: absolute;
+  top: -18px;
+  left: -4px;
+  background-color: #60a5fa;
+  color: #0f172a;
+  font-size: 10px;
+  padding: 1px 4px;
+  border-radius: 4px 4px 4px 0;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0.9;
+  font-weight: 600;
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  z-index: 10;
+}
+
+/* Notes Panel Transitions */
+.notes-panel {
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transform: translateX(100%);
+}
+.notes-panel.open {
+  transform: translateX(0);
+}
+
+/* Modal Overlay */
+.modal-overlay {
+  background-color: rgba(9, 9, 11, 0.8);
+  backdrop-filter: blur(4px);
+}
+
+/* Admin Toast */
+.admin-toast {
+  animation: slideIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@keyframes slideIn {
+  from {
+    transform: translateY(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+/* Blame Margin */
+.blame-margin-glyph {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 4px;
+  font-size: 9px;
+  font-family: 'JetBrains Mono', monospace;
+  color: #71717a;
+  text-transform: uppercase;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+/* Dropup Menu */
+.dropup-content {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  width: 100%;
+  background-color: #121215;
+  border: 1px solid #27272a;
+  border-radius: 6px;
+  margin-bottom: 4px;
+  padding: 8px;
+  box-shadow: 0 -4px 12px rgba(0,0,0,0.5);
+  max-height: 200px;
+  overflow-y: auto;
+  z-index: 50;
+  animation: fadeUp 0.15s ease-out;
+}
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* History Timeline */
+.history-panel {
+  border-left: 1px solid #27272a;
+}
+.history-item {
+  position: relative;
+  padding-left: 16px;
+  border-left: 2px solid #27272a;
+  padding-bottom: 12px;
+}
+.history-item::before {
+  content: '';
+  position: absolute;
+  left: -5px;
+  top: 4px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #27272a;
+  border: 2px solid #121215;
+}
+/* Folder Indentation */
+.file-tree-item {
+  position: relative;
+  transition: background-color 0.15s;
+}
+.file-tree-item::before {
+  content: '';
+  position: absolute;
+  left: 10px;
+  top: -10px;
+  bottom: 12px;
+  width: 1px;
+  background-color: #27272a;
+}
+.file-tree-item:first-child::before {
+  display: none;
+}
+
+/* Global Search Overlay */
+.search-overlay {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(9, 9, 11, 0.95);
+  backdrop-filter: blur(4px);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Timer Cooldown */
+.cooldown-bar {
+  height: 2px;
+  background: #10b981;
+  animation: countdown 60s linear forwards;
+}
+
+@keyframes countdown {
+  from { width: 100%; }
+  to { width: 0%; }
+}
+
+/* Inline Active Blame Flag (GitLens style) */
+.active-blame-flag {
+  color: #52525b; /* zinc-600 */
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-style: italic;
+  padding-left: 16px;
+  opacity: 0.8;
+  white-space: pre;
+}
+
+/* Explorer Hover Actions */
+.explorer-actions {
+  display: none;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+.file-tree-item:hover > .explorer-actions,
+.file-tree-item:hover > div > .explorer-actions {
+  display: flex;
+}
+.explorer-btn {
+  padding: 2px;
+  border-radius: 4px;
+  color: #71717a; /* zinc-500 */
+}
+.explorer-btn:hover {
+  color: #e4e4e7; /* zinc-200 */
+  background-color: #3f3f46; /* zinc-700 */
+}
