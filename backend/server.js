@@ -2,6 +2,11 @@ import express from "express"
 import {createServer} from "http"
 import { Server } from "socket.io"
 import {YSocketIO} from "y-socket.io/dist/server"
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express()
 app.use(express.static("public"))
@@ -167,8 +172,6 @@ io.on('connection', (socket) => {
         }
     });
 });
-
-const path = require('path');
 
 app.get('/health',(req,res)=> res.status(200).json({ message:"ok", success:true }))
 
