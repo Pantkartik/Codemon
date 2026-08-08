@@ -181,4 +181,5 @@ app.get('*', (req, res) => {
     res.sendFile(path.join(__dirname, '../frontend/dist/index.html'));
 });
 
-httpServer.listen(3000,()=> console.log("Server is running on port 3000"))
+const PORT = process.env.PORT || 3000;
+httpServer.listen(PORT,()=> console.log(`Server is running on port ${PORT}`))
