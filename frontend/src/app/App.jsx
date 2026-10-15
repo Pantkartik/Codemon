@@ -107,6 +107,9 @@ function App() {
   const [createRoomType, setCreateRoomType] = useState('public');
   const [createRoomId, setCreateRoomId] = useState("");
   const [createPasskey, setCreatePasskey] = useState("");
+  const [createRoomError, setCreateRoomError] = useState("");
+  const [isCreatingRoom, setIsCreatingRoom] = useState(false);
+  const isCreatingRoomRef = useRef(false);
   const [joinModalRoom, setJoinModalRoom] = useState(null);
   const [joinPasskey, setJoinPasskey] = useState("");
   const [joinStatus, setJoinStatus] = useState(""); 
@@ -245,24 +248,38 @@ function App() {
 
   const handleCreateRoom = async (e) => {
     e.preventDefault();
+    if (isCreatingRoomRef.current) return;
+    const roomId = createRoomId.trim();
+    setCreateRoomError("");
+    if (!roomId) {
+      setCreateRoomError("Room ID is required.");
+      return;
+    }
     if (createRoomType === 'private' && !validatePasskey(createPasskey)) return;
 
+    isCreatingRoomRef.current = true;
+    setIsCreatingRoom(true);
     try {
       const res = await fetch('/api/room/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: createRoomId, type: createRoomType, passkey: createPasskey })
+        body: JSON.stringify({ id: roomId, type: createRoomType, passkey: createPasskey })
       });
-      const data = await res.json();
-      if (data.success) {
-        setShowCreateModal(false);
-        fetchRooms();
-        setActiveRoomId(createRoomId);
-        handleJoinRoom(createRoomId, createPasskey); 
-      } else {
-        alert(data.message);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) {
+        setCreateRoomError(data.message || "Unable to create room. Please try again.");
+        return;
       }
-    } catch (err) { alert("Error creating room"); }
+      setShowCreateModal(false);
+      fetchRooms();
+      setActiveRoomId(roomId);
+      handleJoinRoom(roomId, createPasskey);
+    } catch {
+      setCreateRoomError("Could not reach the server. Check your connection and try again.");
+    } finally {
+      isCreatingRoomRef.current = false;
+      setIsCreatingRoom(false);
+    }
   };
 
   const handleJoinRoom = (roomId, passkey = "") => {
@@ -589,6 +606,7 @@ function App() {
             <div className="surface-card p-6 rounded-xl w-full max-w-sm shadow-2xl">
               <h2 className="text-lg font-bold mb-4">Create New Room</h2>
               <form onSubmit={handleCreateRoom} className="space-y-4">
+                {createRoomError && <p role="alert" className="text-xs text-rose-400">{createRoomError}</p>}
                 <div>
                   <label className="block text-xs text-zinc-400 mb-1">Room ID</label>
                   <input type="text" required value={createRoomId} onChange={e=>setCreateRoomId(e.target.value)} className="input-clean w-full p-2.5 rounded text-sm" placeholder="e.g. hackathon-1" />
@@ -612,8 +630,8 @@ function App() {
                   </div>
                 )}
                 <div className="flex justify-end gap-2 mt-4">
-                  <button type="button" onClick={()=>setShowCreateModal(false)} className="px-4 py-2 rounded text-sm bg-zinc-800 text-zinc-300">Cancel</button>
-                  <button type="submit" className="px-4 py-2 rounded text-sm bg-zinc-100 text-zinc-900 font-bold">Create</button>
+                  <button type="button" onClick={()=>{setShowCreateModal(false);setCreateRoomError("");}} className="px-4 py-2 rounded text-sm bg-zinc-800 text-zinc-300">Cancel</button>
+                  <button type="submit" disabled={isCreatingRoom} className="px-4 py-2 rounded text-sm bg-zinc-100 text-zinc-900 font-bold disabled:opacity-50 disabled:cursor-not-allowed">{isCreatingRoom ? "Creating..." : "Create"}</button>
                 </div>
               </form>
             </div>
