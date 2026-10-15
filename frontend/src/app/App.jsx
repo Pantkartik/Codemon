@@ -108,6 +108,8 @@ function App() {
   const [createRoomId, setCreateRoomId] = useState("");
   const [createPasskey, setCreatePasskey] = useState("");
   const [createRoomError, setCreateRoomError] = useState("");
+  const [isCreatingRoom, setIsCreatingRoom] = useState(false);
+  const isCreatingRoomRef = useRef(false);
   const [joinModalRoom, setJoinModalRoom] = useState(null);
   const [joinPasskey, setJoinPasskey] = useState("");
   const [joinStatus, setJoinStatus] = useState(""); 
@@ -246,6 +248,7 @@ function App() {
 
   const handleCreateRoom = async (e) => {
     e.preventDefault();
+    if (isCreatingRoomRef.current) return;
     const roomId = createRoomId.trim();
     setCreateRoomError("");
     if (!roomId) {
@@ -254,6 +257,8 @@ function App() {
     }
     if (createRoomType === 'private' && !validatePasskey(createPasskey)) return;
 
+    isCreatingRoomRef.current = true;
+    setIsCreatingRoom(true);
     try {
       const res = await fetch('/api/room/create', {
         method: 'POST',
@@ -271,6 +276,9 @@ function App() {
       handleJoinRoom(roomId, createPasskey);
     } catch {
       setCreateRoomError("Could not reach the server. Check your connection and try again.");
+    } finally {
+      isCreatingRoomRef.current = false;
+      setIsCreatingRoom(false);
     }
   };
 
@@ -623,7 +631,7 @@ function App() {
                 )}
                 <div className="flex justify-end gap-2 mt-4">
                   <button type="button" onClick={()=>{setShowCreateModal(false);setCreateRoomError("");}} className="px-4 py-2 rounded text-sm bg-zinc-800 text-zinc-300">Cancel</button>
-                  <button type="submit" className="px-4 py-2 rounded text-sm bg-zinc-100 text-zinc-900 font-bold">Create</button>
+                  <button type="submit" disabled={isCreatingRoom} className="px-4 py-2 rounded text-sm bg-zinc-100 text-zinc-900 font-bold disabled:opacity-50 disabled:cursor-not-allowed">{isCreatingRoom ? "Creating..." : "Create"}</button>
                 </div>
               </form>
             </div>
