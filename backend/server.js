@@ -28,8 +28,16 @@ app.get('/api/rooms', (req, res) => {
 });
 
 app.post('/api/room/create', (req, res) => {
-    const { id, type, passkey } = req.body;
-    if (rooms.has(id)) {
+    const { id, type, passkey } = req.body ?? {};
+    const roomId = typeof id === 'string' ? id.trim() : '';
+
+    if (!roomId) {
+        return res.status(400).json({ success: false, message: "Room ID is required" });
+    }
+    if (type !== 'public' && type !== 'private') {
+        return res.status(400).json({ success: false, message: "Room type must be public or private" });
+    }
+    if (rooms.has(roomId)) {
         return res.status(400).json({ success: false, message: "Room already exists" });
     }
     if (type === 'private') {
@@ -37,7 +45,7 @@ app.post('/api/room/create', (req, res) => {
             return res.status(400).json({ success: false, message: "Passkey must be exactly 8 characters containing upper, lower, number, and special character." });
         }
     }
-    rooms.set(id, {
+    rooms.set(roomId, {
         type,
         passkey: type === 'private' ? passkey : null,
         adminSocketId: null,
