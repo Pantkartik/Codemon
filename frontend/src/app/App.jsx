@@ -93,13 +93,27 @@ const FileTreeNode = ({ node, level, activeFile, setActiveFile, collapsedFolders
 
 function App() {
   const [view, setView] = useState('onboarding'); 
-  
-  const [username, setUsername] = useState(() => localStorage.getItem('codemon_user') || "");
-  const [email, setEmail] = useState(() => localStorage.getItem('codemon_email') || "");
-  const [isGuest, setIsGuest] = useState(true);
+  const [authReady, setAuthReady] = useState(false);
+  const [authMode, setAuthMode] = useState('login');
+  const [authStep, setAuthStep] = useState('credentials');
+  const [authIdentifier, setAuthIdentifier] = useState("");
+  const [password, setPassword] = useState("");
+  const [otp, setOtp] = useState("");
+  const [pendingOtpEmail, setPendingOtpEmail] = useState("");
+  const [authError, setAuthError] = useState("");
+  const [authMessage, setAuthMessage] = useState("");
+  const [accessToken, setAccessToken] = useState(null);
+  const isAuthenticated = Boolean(accessToken);
+  const [username, setUsername] = useState("");
+  const [email, setEmail] = useState("");
 
   // Socket & Connection
   const [socket, setSocket] = useState(null);
+  const socketRef = useRef(null);
+  const accessTokenRef = useRef(null);
+  const pendingJoinRef = useRef(null);
+  const joinRequestRef = useRef(false);
+  accessTokenRef.current = accessToken;
   
   // Lobby State
   const [rooms, setRooms] = useState([]);
@@ -113,8 +127,8 @@ function App() {
   const [joinModalRoom, setJoinModalRoom] = useState(null);
   const [joinPasskey, setJoinPasskey] = useState("");
   const [joinStatus, setJoinStatus] = useState(""); 
+  const [isJoinPending, setIsJoinPending] = useState(false);
   const [passkeyError, setPasskeyError] = useState("");
-  const [cooldown, setCooldown] = useState(0);
 
   // Room State
   const [activeRoomId, setActiveRoomId] = useState(null);
@@ -155,45 +169,205 @@ function App() {
   const yBlame = useMemo(() => ydoc.getMap("blame"), [ydoc]);
   const yHistory = useMemo(() => ydoc.getMap("history"), [ydoc]);
 
+  const completeAuthentication = (data) => {
+    accessTokenRef.current = data.accessToken;
+    setAccessToken(data.accessToken);
+    setUsername(data.user.username);
+    setEmail(data.user.email);
+    setPassword("");
+    setOtp("");
+    setAuthStep('credentials');
+    setAuthError("");
+    setAuthMessage("");
+    setView('lobby');
+  };
+
   useEffect(() => {
-    if (username && view === 'onboarding') {
-      setView('lobby');
-    }
+    let cancelled = false;
+    const restoreSession = async () => {
+      try {
+        const res = await fetch('/api/auth/refresh-token', { credentials: 'include' });
+        const data = await res.json().catch(() => ({}));
+        if (!cancelled && res.ok && data.accessToken && data.user) {
+          completeAuthentication(data);
+        } else if (!cancelled && res.status !== 401) {
+          setAuthError(data.message || "Could not restore your session. Please sign in.");
+        }
+      } catch {
+        if (!cancelled) setAuthError("Could not connect to the authentication service.");
+      } finally {
+        if (!cancelled) setAuthReady(true);
+      }
+    };
+    restoreSession();
+    return () => { cancelled = true; };
   }, []);
 
-  const handleLogin = (e) => {
+  const handleAuthSubmit = async (e) => {
     e.preventDefault();
-    if (username) {
-      localStorage.setItem('codemon_user', username);
-      if (!isGuest) localStorage.setItem('codemon_email', email);
-      setView('lobby');
+    setAuthError("");
+    setAuthMessage("");
+    try {
+      const body = authMode === 'register'
+        ? { username: authIdentifier.trim(), email: email.trim(), password }
+        : { identifier: authIdentifier.trim(), password };
+      const res = await fetch(`/api/auth/${authMode}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(body)
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || "Authentication failed.");
+      setPendingOtpEmail(data.email);
+      setEmail(data.email);
+      setAuthStep('otp');
+      setOtp("");
+      setAuthMessage(data.message || "Enter the verification code sent to your email.");
+    } catch (error) {
+      setAuthError(error.message || "Could not reach the authentication service.");
+    }
+  };
+
+  const handleVerifyOtp = async (e) => {
+    e.preventDefault();
+    setAuthError("");
+    try {
+      const res = await fetch('/api/auth/verify-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ email: pendingOtpEmail, otp })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || "Could not verify the code.");
+      completeAuthentication(data);
+    } catch (error) {
+      setAuthError(error.message || "Could not reach the authentication service.");
+    }
+  };
+
+  const handleResendOtp = async () => {
+    setAuthError("");
+    setAuthMessage("");
+    try {
+      const res = await fetch('/api/auth/send-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ email: pendingOtpEmail })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || "Could not send a new code.");
+      setAuthMessage(data.message);
+    } catch (error) {
+      setAuthError(error.message || "Could not reach the authentication service.");
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+    } finally {
+      accessTokenRef.current = null;
+      setAccessToken(null);
+      setUsername("");
+      setEmail("");
+      setView('onboarding');
+      setPendingRequests([]);
+      setActiveRoomId(null);
+      setIsAdmin(false);
+      setAuthStep('credentials');
+      setAuthMode('login');
+      setAuthMessage("");
+      setAuthError("");
     }
   };
 
   useEffect(() => {
-    const s = io(import.meta.env.PROD ? undefined : "http://localhost:3000");
+    if (!accessToken) return;
+    const timeout = setTimeout(async () => {
+      try {
+        const res = await fetch('/api/auth/refresh-token', { credentials: 'include' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.accessToken) throw new Error(data.message || "Session expired.");
+        accessTokenRef.current = data.accessToken;
+        setAccessToken(data.accessToken);
+        if (data.user) {
+          setUsername(data.user.username);
+          setEmail(data.user.email);
+        }
+      } catch {
+        accessTokenRef.current = null;
+        setAccessToken(null);
+        setView('onboarding');
+        setAuthError("Your session expired. Please sign in again.");
+      }
+    }, 12 * 60 * 1000);
+    return () => clearTimeout(timeout);
+  }, [accessToken]);
+
+  useEffect(() => {
+    if (!accessToken) return;
+    if (socketRef.current) socketRef.current.auth = { token: accessToken };
+    if (providerRef.current) {
+      providerRef.current.socket.auth = { token: accessToken, roomId: activeRoomId };
+    }
+  }, [accessToken, activeRoomId]);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const s = io(import.meta.env.PROD ? undefined : "http://localhost:3000", {
+      auth: { token: accessTokenRef.current }
+    });
+    socketRef.current = s;
     setSocket(s);
 
+    const onConnect = () => {
+      const pendingJoin = pendingJoinRef.current;
+      if (pendingJoin) {
+        pendingJoinRef.current = null;
+        s.emit('join-room-req', pendingJoin);
+      }
+    };
+
     s.on('join-decision', (res) => {
+      joinRequestRef.current = false;
+      setIsJoinPending(false);
       if (res.success) {
         setIsAdmin(res.isAdmin);
         setJoinModalRoom(null);
-        setCooldown(0);
+        setJoinStatus("");
         setView('workspace');
       } else {
         setJoinStatus(res.message);
-        if (res.message.includes('Admin denied')) {
-          setCooldown(0); // Reset timer if denied
-        }
+        setActiveRoomId(null);
+      }
+    });
+    s.on('join-pending', ({ message }) => setJoinStatus(message));
+    s.on('connect', onConnect);
+    s.on('connect_error', (error) => {
+      if (pendingJoinRef.current || joinRequestRef.current) {
+        pendingJoinRef.current = null;
+        setIsJoinPending(false);
+        joinRequestRef.current = false;
+        setJoinStatus(error.message || "Could not connect to the room server.");
       }
     });
 
-    return () => s.disconnect();
-  }, []);
+    return () => {
+      s.disconnect();
+      socketRef.current = null;
+      setSocket(null);
+    };
+  }, [isAuthenticated]);
 
   const fetchRooms = async () => {
     try {
-      const res = await fetch('/api/rooms');
+      const res = await fetch('/api/rooms', {
+        headers: { Authorization: `Bearer ${accessTokenRef.current}` }
+      });
+      if (!res.ok) throw new Error("Could not load rooms.");
       setRooms(await res.json());
     } catch (e) { console.error(e); }
   };
@@ -205,14 +379,6 @@ function App() {
       return () => clearInterval(intv);
     }
   }, [view]);
-
-  // Cooldown timer logic
-  useEffect(() => {
-    if (cooldown > 0) {
-      const t = setTimeout(() => setCooldown(cooldown - 1), 1000);
-      return () => clearTimeout(t);
-    }
-  }, [cooldown]);
 
   useEffect(() => {
     if (!socket || !isAdmin) return;
@@ -232,7 +398,7 @@ function App() {
   }, [socket, isAdmin]);
 
   const handleAdminDecision = (req, approved) => {
-    socket.emit('admin-decision', { reqSocketId: req.socketId, approved, roomId: req.roomId });
+    socketRef.current?.emit('admin-decision', { reqSocketId: req.socketId, approved, roomId: req.roomId });
     setPendingRequests(prev => prev.filter(p => p.socketId !== req.socketId));
   };
 
@@ -262,7 +428,10 @@ function App() {
     try {
       const res = await fetch('/api/room/create', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessTokenRef.current}`
+        },
         body: JSON.stringify({ id: roomId, type: createRoomType, passkey: createPasskey })
       });
       const data = await res.json().catch(() => ({}));
@@ -283,11 +452,19 @@ function App() {
   };
 
   const handleJoinRoom = (roomId, passkey = "") => {
-    if (cooldown > 0) return;
+    if (joinRequestRef.current) return;
     setActiveRoomId(roomId);
     setJoinStatus("Requesting access...");
-    setCooldown(60); 
-    socket.emit('join-room-req', { roomId, passkey, username });
+    setIsJoinPending(true);
+    joinRequestRef.current = true;
+    const request = { roomId, passkey };
+    const currentSocket = socketRef.current;
+    if (!currentSocket?.connected) {
+      pendingJoinRef.current = request;
+      currentSocket?.connect();
+      return;
+    }
+    currentSocket.emit('join-room-req', request);
   };
 
   const handleJoinSubmit = (e) => {
@@ -299,7 +476,10 @@ function App() {
     if (view !== 'workspace' || !activeRoomId) return;
 
     const serverUrl = import.meta.env.PROD ? window.location.origin : "http://localhost:3000";
-    const provider = new SocketIOProvider(serverUrl, `y-${activeRoomId}`, ydoc, { autoConnect: true });
+    const provider = new SocketIOProvider(serverUrl, `y-${activeRoomId}`, ydoc, {
+      autoConnect: true,
+      auth: { token: accessTokenRef.current, roomId: activeRoomId }
+    });
     providerRef.current = provider;
 
     provider.awareness.setLocalStateField("user", { name: username, color: "#60a5fa" });
@@ -500,7 +680,10 @@ function App() {
 
       const res = await fetch('/api/github/push', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessTokenRef.current}`
+        },
         body: JSON.stringify({ token: ghToken, repo: ghRepo, commitMessage: ghCommitMsg, files: filesPayload })
       });
       const data = await res.json();
@@ -516,12 +699,23 @@ function App() {
   };
 
   const leaveRoom = () => {
+    socketRef.current?.emit('leave-room');
     if (providerRef.current) providerRef.current.disconnect();
     if (bindingRef.current) bindingRef.current.destroy();
     setActiveRoomId(null);
+    setPendingRequests([]);
     setIsAdmin(false);
+    setJoinStatus("");
     setView('lobby');
   };
+
+  if (!authReady) {
+    return (
+      <main className="h-screen w-full bg-[#09090b] text-zinc-200 flex items-center justify-center">
+        <p className="text-sm text-zinc-400">Checking your session...</p>
+      </main>
+    );
+  }
 
   if (view === 'onboarding') {
     return (
@@ -530,28 +724,57 @@ function App() {
         <div className="w-full max-w-sm surface-card rounded-xl p-6 shadow-2xl z-10">
           <div className="w-12 h-12 mx-auto rounded-xl bg-zinc-800 border border-zinc-700 flex items-center justify-center text-zinc-100 font-bold text-2xl mb-4">m</div>
           <h1 className="text-2xl font-bold text-zinc-100 mb-1 text-center">codemon</h1>
-          <p className="text-sm text-zinc-400 mb-6 text-center">Multi-file collaborative workspace</p>
-          
-          <div className="flex gap-2 mb-6 p-1 bg-zinc-900 rounded-lg">
-            <button onClick={() => setIsGuest(true)} className={`flex-1 py-1.5 text-xs font-semibold rounded-md transition-colors ${isGuest ? 'bg-zinc-800 text-zinc-100' : 'text-zinc-500 hover:text-zinc-300'}`}>Guest</button>
-            <button onClick={() => setIsGuest(false)} className={`flex-1 py-1.5 text-xs font-semibold rounded-md transition-colors ${!isGuest ? 'bg-zinc-800 text-zinc-100' : 'text-zinc-500 hover:text-zinc-300'}`}>Email Login</button>
-          </div>
+          <p className="text-sm text-zinc-400 mb-6 text-center">Sign in to build and collaborate with your team.</p>
 
-          <form onSubmit={handleLogin} className="space-y-4">
-            {!isGuest && (
-              <div>
-                <label className="block text-[11px] font-medium text-zinc-400 uppercase tracking-wider mb-1.5">Email Address</label>
-                <input type="email" value={email} onChange={e=>setEmail(e.target.value)} required placeholder="you@example.com" className="input-clean w-full px-3.5 py-2.5 rounded-lg text-sm" />
+          {authStep === 'credentials' ? (
+            <>
+              <div className="flex gap-2 mb-6 p-1 bg-zinc-900 rounded-lg">
+                <button type="button" onClick={() => {setAuthMode('login');setAuthError("");setAuthMessage("");}} className={`flex-1 py-1.5 text-xs font-semibold rounded-md transition-colors ${authMode === 'login' ? 'bg-zinc-800 text-zinc-100' : 'text-zinc-500 hover:text-zinc-300'}`}>Sign in</button>
+                <button type="button" onClick={() => {setAuthMode('register');setAuthError("");setAuthMessage("");}} className={`flex-1 py-1.5 text-xs font-semibold rounded-md transition-colors ${authMode === 'register' ? 'bg-zinc-800 text-zinc-100' : 'text-zinc-500 hover:text-zinc-300'}`}>Create account</button>
               </div>
-            )}
-            <div>
-              <label className="block text-[11px] font-medium text-zinc-400 uppercase tracking-wider mb-1.5">Username</label>
-              <input type="text" value={username} onChange={e=>setUsername(e.target.value)} required placeholder="Choose a username" className="input-clean w-full px-3.5 py-2.5 rounded-lg text-sm" autoFocus />
-            </div>
-            <button type="submit" className="w-full py-2.5 px-4 rounded-lg bg-zinc-100 hover:bg-zinc-200 text-zinc-900 font-bold text-sm transition-colors mt-2">
-              {isGuest ? 'Continue to Lobby' : 'Login & Continue'}
-            </button>
-          </form>
+              <form onSubmit={handleAuthSubmit} className="space-y-4">
+                {authMode === 'register' && (
+                  <>
+                    <div>
+                      <label className="block text-[11px] font-medium text-zinc-400 uppercase tracking-wider mb-1.5">Username</label>
+                      <input type="text" value={authIdentifier} onChange={e=>setAuthIdentifier(e.target.value)} required minLength={3} maxLength={24} placeholder="alex_dev" className="input-clean w-full px-3.5 py-2.5 rounded-lg text-sm" autoComplete="username" />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-medium text-zinc-400 uppercase tracking-wider mb-1.5">Email Address</label>
+                      <input type="email" value={email} onChange={e=>setEmail(e.target.value)} required placeholder="you@example.com" className="input-clean w-full px-3.5 py-2.5 rounded-lg text-sm" autoComplete="email" />
+                    </div>
+                  </>
+                )}
+                {authMode === 'login' && (
+                  <div>
+                    <label className="block text-[11px] font-medium text-zinc-400 uppercase tracking-wider mb-1.5">Email or Username</label>
+                    <input type="text" value={authIdentifier} onChange={e=>setAuthIdentifier(e.target.value)} required placeholder="you@example.com" className="input-clean w-full px-3.5 py-2.5 rounded-lg text-sm" autoComplete="username" />
+                  </div>
+                )}
+                <div>
+                  <label className="block text-[11px] font-medium text-zinc-400 uppercase tracking-wider mb-1.5">Password</label>
+                  <input type="password" value={password} onChange={e=>setPassword(e.target.value)} required minLength={8} maxLength={128} placeholder="At least 8 characters" className="input-clean w-full px-3.5 py-2.5 rounded-lg text-sm" autoComplete={authMode === 'register' ? 'new-password' : 'current-password'} />
+                </div>
+                {authError && <p role="alert" className="text-xs text-rose-400">{authError}</p>}
+                {authMessage && <p className="text-xs text-emerald-400">{authMessage}</p>}
+                <button type="submit" className="w-full py-2.5 px-4 rounded-lg bg-zinc-100 hover:bg-zinc-200 text-zinc-900 font-bold text-sm transition-colors mt-2">
+                  {authMode === 'register' ? 'Create account' : 'Continue'}
+                </button>
+              </form>
+            </>
+          ) : (
+            <form onSubmit={handleVerifyOtp} className="space-y-4">
+              <p className="text-sm text-zinc-400 text-center">Enter the 6-digit code sent to <strong className="text-zinc-200">{pendingOtpEmail}</strong>.</p>
+              {authError && <p role="alert" className="text-xs text-rose-400">{authError}</p>}
+              {authMessage && <p className="text-xs text-emerald-400">{authMessage}</p>}
+              <input type="text" value={otp} onChange={e=>setOtp(e.target.value.replace(/\D/g, '').slice(0, 6))} required pattern="\d{6}" inputMode="numeric" autoComplete="one-time-code" placeholder="6-digit code" className="input-clean w-full px-3.5 py-2.5 rounded-lg text-center text-lg tracking-[0.4em] font-mono" />
+              <button type="submit" className="w-full py-2.5 px-4 rounded-lg bg-zinc-100 hover:bg-zinc-200 text-zinc-900 font-bold text-sm transition-colors">Verify and enter workspace</button>
+              <div className="flex justify-between text-xs">
+                <button type="button" onClick={handleResendOtp} className="text-emerald-400 hover:text-emerald-300">Resend code</button>
+                <button type="button" onClick={() => {setAuthStep('credentials');setAuthError("");setAuthMessage("");}} className="text-zinc-400 hover:text-zinc-200">Back to sign in</button>
+              </div>
+            </form>
+          )}
         </div>
       </main>
     );
@@ -571,9 +794,11 @@ function App() {
               {username} {email && <span className="opacity-50">({email})</span>}
             </div>
             <button onClick={() => setShowCreateModal(true)} className="px-4 py-2 bg-zinc-100 text-zinc-900 rounded-md font-semibold text-sm hover:bg-zinc-200 transition-colors shadow-lg">Create Room</button>
+            <button onClick={handleLogout} className="text-xs text-zinc-400 hover:text-zinc-100">Sign out</button>
           </div>
         </header>
 
+        {joinStatus && <p role="status" className="mb-4 text-sm text-amber-300">{joinStatus}</p>}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {rooms.map(r => (
             <div key={r.id} className="surface-card p-5 rounded-xl flex flex-col justify-between hover:border-zinc-600 transition-colors group">
@@ -587,7 +812,11 @@ function App() {
                 <p className="text-xs text-zinc-500 mb-4 font-mono">{r.usersCount} users online • {r.type==='public'?'Max 20 limit':'Admin required'}</p>
               </div>
               <button 
-                onClick={() => r.type === 'public' ? handleJoinRoom(r.id) : setJoinModalRoom(r)}
+                onClick={() => {
+                  setJoinStatus("");
+                  if (r.type === 'public') handleJoinRoom(r.id);
+                  else setJoinModalRoom(r);
+                }}
                 className="w-full py-2 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm font-semibold transition-colors">
                 Join Session
               </button>
@@ -641,18 +870,24 @@ function App() {
         {joinModalRoom && (
           <div className="absolute inset-0 modal-overlay z-50 flex items-center justify-center p-4">
             <div className="surface-card p-6 rounded-xl w-full max-w-sm shadow-2xl relative overflow-hidden">
-              {cooldown > 0 && <div className="absolute top-0 left-0 right-0 cooldown-bar" />}
               <h2 className="text-lg font-bold mb-2">Join {joinModalRoom.id}</h2>
               <p className="text-xs text-zinc-400 mb-4">This is a private room. You need the passkey and Admin approval.</p>
               <form onSubmit={handleJoinSubmit} className="space-y-4">
-                <input type="password" required value={joinPasskey} onChange={e=>setJoinPasskey(e.target.value)} className="input-clean w-full p-2.5 rounded text-sm" placeholder="Enter passkey" disabled={cooldown > 0} />
+                <input type="password" required value={joinPasskey} onChange={e=>setJoinPasskey(e.target.value)} className="input-clean w-full p-2.5 rounded text-sm" placeholder="Enter passkey" disabled={isJoinPending} />
                 
-                {joinStatus && <p className={`text-xs ${cooldown > 0 ? 'text-amber-400' : 'text-rose-400'}`}>{joinStatus}</p>}
+                {joinStatus && <p role="status" className={`text-xs ${isJoinPending ? 'text-amber-400' : 'text-rose-400'}`}>{joinStatus}</p>}
                 
                 <div className="flex justify-end gap-2">
-                  <button type="button" onClick={()=>{setJoinModalRoom(null);setJoinStatus("");setCooldown(0);}} className="px-4 py-2 rounded text-sm bg-zinc-800 text-zinc-300">Cancel</button>
-                  <button type="submit" disabled={cooldown > 0} className="px-4 py-2 rounded text-sm bg-zinc-100 hover:bg-zinc-200 text-zinc-900 font-bold disabled:opacity-50 disabled:cursor-not-allowed transition-all">
-                    {cooldown > 0 ? `Wait ${cooldown}s` : 'Request Access'}
+                  <button type="button" onClick={()=>{
+                    if (isJoinPending) socketRef.current?.emit('cancel-join-request', { roomId: joinModalRoom.id });
+                    pendingJoinRef.current = null;
+                    joinRequestRef.current = false;
+                    setIsJoinPending(false);
+                    setJoinModalRoom(null);
+                    setJoinStatus("");
+                  }} className="px-4 py-2 rounded text-sm bg-zinc-800 text-zinc-300">Cancel</button>
+                  <button type="submit" disabled={isJoinPending} className="px-4 py-2 rounded text-sm bg-zinc-100 hover:bg-zinc-200 text-zinc-900 font-bold disabled:opacity-50 disabled:cursor-not-allowed transition-all">
+                    {isJoinPending ? 'Request pending...' : 'Request Access'}
                   </button>
                 </div>
               </form>

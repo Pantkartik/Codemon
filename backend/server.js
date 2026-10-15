@@ -2,8 +2,10 @@ import express from "express"
 import {createServer} from "http"
 import { Server } from "socket.io"
 import {YSocketIO} from "y-socket.io/dist/server"
+import cookieParser from "cookie-parser"
 import path from 'path';
 import { fileURLToPath } from 'url';
+import authRouter, { requireAccessToken, verifyAccessToken } from "./auth.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -11,13 +13,15 @@ const __dirname = path.dirname(__filename);
 const app = express()
 app.use(express.static("public"))
 app.use(express.json({ limit: '50mb' }))
+app.use(cookieParser())
+app.use('/api/auth', authRouter)
 
 // Room Management
 // rooms[roomId] = { type: 'public'|'private', passkey?: string, adminSocketId: string, users: Set<string> }
 const rooms = new Map();
 const passkeyRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8}$/;
 
-app.get('/api/rooms', (req, res) => {
+app.get('/api/rooms', requireAccessToken, (req, res) => {
     const activeRooms = Array.from(rooms.entries()).map(([id, data]) => ({
         id,
         type: data.type,
@@ -27,7 +31,7 @@ app.get('/api/rooms', (req, res) => {
     res.json(activeRooms);
 });
 
-app.post('/api/room/create', (req, res) => {
+app.post('/api/room/create', requireAccessToken, (req, res) => {
     const { id, type, passkey } = req.body ?? {};
     const roomId = typeof id === 'string' ? id.trim() : '';
 
@@ -49,13 +53,15 @@ app.post('/api/room/create', (req, res) => {
         type,
         passkey: type === 'private' ? passkey : null,
         adminSocketId: null,
-        users: new Set()
+        users: new Set(),
+        members: new Map(),
+        pendingRequests: new Map()
     });
     res.json({ success: true });
 });
 
 // GitHub Push Endpoint
-app.post('/api/github/push', async (req, res) => {
+app.post('/api/github/push', requireAccessToken, async (req, res) => {
     const { token, repo, commitMessage, files } = req.body;
     if (!token || !repo || !files) return res.status(400).json({ error: "Missing parameters" });
 
@@ -112,13 +118,65 @@ app.post('/api/github/push', async (req, res) => {
 const httpServer=createServer(app)
 const io=new Server(httpServer,{ cors:{ origin:"*", methods:["GET","POST"] } })
 
-const ySocketIO=new YSocketIO(io)
+io.use((socket, next) => {
+    try {
+        socket.data.user = verifyAccessToken(socket.handshake.auth?.token);
+        next();
+    } catch {
+        next(new Error("Authentication required"));
+    }
+});
+
+const ySocketIO=new YSocketIO(io, {
+    authenticate: (handshake) => {
+        try {
+            const user = verifyAccessToken(handshake.auth?.token);
+            const room = rooms.get(handshake.auth?.roomId);
+            return Boolean(room?.members.get(user.userId)?.size);
+        } catch {
+            return false;
+        }
+    }
+})
 ySocketIO.initialize()
 
+function removeSocketFromRoom(socket) {
+    const roomId = socket.roomId;
+    if (!roomId) return;
+    const room = rooms.get(roomId);
+    socket.roomId = null;
+    if (!room) return;
+
+    room.users.delete(socket.id);
+    const memberSockets = room.members.get(socket.data.user.userId);
+    memberSockets?.delete(socket.id);
+    if (memberSockets?.size === 0) room.members.delete(socket.data.user.userId);
+    room.pendingRequests.delete(socket.id);
+    socket.leave(`sys-${roomId}`);
+
+    if (room.users.size === 0) {
+        rooms.delete(roomId);
+        return;
+    }
+    if (room.adminSocketId === socket.id) {
+        room.adminSocketId = Array.from(room.users)[0];
+        io.to(room.adminSocketId).emit('admin-promoted');
+    }
+}
+
 io.on('connection', (socket) => {
-    socket.on('join-room-req', ({ roomId, passkey, username }) => {
+    socket.on('join-room-req', ({ roomId, passkey } = {}) => {
+        if (typeof roomId !== 'string' || !roomId.trim()) {
+            return socket.emit('join-decision', { success: false, message: "Room ID is required" });
+        }
+        roomId = roomId.trim();
         const room = rooms.get(roomId);
         if (!room) return socket.emit('join-decision', { success: false, message: "Room not found" });
+
+        if (socket.roomId === roomId && room.users.has(socket.id)) {
+            return socket.emit('join-decision', { success: true, isAdmin: room.adminSocketId === socket.id });
+        }
+        if (socket.roomId) removeSocketFromRoom(socket);
 
         if (room.type === 'public' && room.users.size >= 20) {
             return socket.emit('join-decision', { success: false, message: "Room is full (max 20)" });
@@ -129,9 +187,13 @@ io.on('connection', (socket) => {
             
             // Require Admin approval if an admin exists and it's not the first user
             if (room.users.size > 0 && room.adminSocketId) {
-                // Send request to admin
-                io.to(room.adminSocketId).emit('join-request', { socketId: socket.id, username, roomId });
-                return; // Wait for admin decision
+                room.pendingRequests.set(socket.id, socket.data.user.username);
+                io.to(room.adminSocketId).emit('join-request', {
+                    socketId: socket.id,
+                    username: socket.data.user.username,
+                    roomId
+                });
+                return socket.emit('join-pending', { message: "Waiting for the room admin to approve your request." });
             }
         }
 
@@ -140,44 +202,47 @@ io.on('connection', (socket) => {
         finalizeJoin(socket, room, roomId);
         if (isAdmin) room.adminSocketId = socket.id;
         socket.emit('join-decision', { success: true, isAdmin });
+        io.emit('rooms-updated');
     });
 
     socket.on('admin-decision', ({ reqSocketId, approved, roomId }) => {
         const room = rooms.get(roomId);
-        if (!room) return;
+        if (!room || socket.id !== room.adminSocketId || !room.pendingRequests.has(reqSocketId)) return;
+        const reqSocket = io.sockets.sockets.get(reqSocketId);
+        room.pendingRequests.delete(reqSocketId);
 
         if (approved) {
-            const reqSocket = io.sockets.sockets.get(reqSocketId);
             if (reqSocket) {
                 finalizeJoin(reqSocket, room, roomId);
                 reqSocket.emit('join-decision', { success: true, isAdmin: false });
+                io.emit('rooms-updated');
             }
         } else {
-            io.to(reqSocketId).emit('join-decision', { success: false, message: "Admin denied your request" });
+            reqSocket?.emit('join-decision', { success: false, message: "Admin denied your request" });
         }
+    });
+
+    socket.on('cancel-join-request', ({ roomId } = {}) => {
+        rooms.get(roomId)?.pendingRequests.delete(socket.id);
     });
 
     function finalizeJoin(socket, room, roomId) {
         socket.join(`sys-${roomId}`); // System room for tracking
         room.users.add(socket.id);
+        const userId = socket.data.user.userId;
+        if (!room.members.has(userId)) room.members.set(userId, new Set());
+        room.members.get(userId).add(socket.id);
         socket.roomId = roomId;
     }
 
+    socket.on('leave-room', () => {
+        removeSocketFromRoom(socket);
+        io.emit('rooms-updated');
+    });
+
     socket.on('disconnect', () => {
-        if (socket.roomId) {
-            const room = rooms.get(socket.roomId);
-            if (room) {
-                room.users.delete(socket.id);
-                if (room.users.size === 0) {
-                    rooms.delete(socket.roomId);
-                } else if (room.adminSocketId === socket.id) {
-                    // Assign a new admin randomly
-                    const newAdminId = Array.from(room.users)[0];
-                    room.adminSocketId = newAdminId;
-                    io.to(newAdminId).emit('admin-promoted');
-                }
-            }
-        }
+        removeSocketFromRoom(socket);
+        io.emit('rooms-updated');
     });
 });
 
